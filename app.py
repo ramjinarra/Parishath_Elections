@@ -138,4 +138,4 @@ if data:
         st.markdown("---")
         st.subheader("Detailed Candidate List")
         
-        raw_results = data.get("candidates", {}).get(level_key,
+        raw_results = data.get("candidates", {}).get(level_key, {})
