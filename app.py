@@ -53,149 +53,128 @@ def fetch_all_data():
 
 data = fetch_all_data()
 
-# --- SIDEBAR FILTERS ---
-st.sidebar.header("Filter Results")
-
 if data:
-    with st.expander("🛠️ API Debug Info (Check this if filters are empty)"):
+    with st.expander("🛠️ API Debug Info"):
         st.write("Keys found in latest.json:", data.get("latest_keys"))
         st.write("URLs matched:", data.get("urls_found"))
-    
-    # Load the base lists for lookups later
-    district_list_mp = data.get("districts", {}).get("Mandal Parishad", [])
-    constituency_list_mp = data.get("constituencies", {}).get("Mandal Parishad", [])
-    mandal_list_mp = data.get("mandals", {}).get("Mandal Parishad", [])
-    
-    district_list_zp = data.get("districts", {}).get("Zilla Parishad", [])
-    constituency_list_zp = data.get("constituencies", {}).get("Zilla Parishad", [])
-    mandal_list_zp = data.get("mandals", {}).get("Zilla Parishad", [])
-    
-    # --- CASCADING FILTER LOGIC ---
-    # We use the detailed candidates table to map what regions belong to each other
-    raw_cands = data.get("candidates", {}).get("Mandal Parishad", {})
-    cand_array = raw_cands.get("Results", []) if isinstance(raw_cands, dict) else raw_cands
-    df_map = pd.DataFrame(cand_array)
-    
-    dist_col = "district_in_english" if "district_in_english" in df_map.columns else None
-    const_col = "constituency_in_english" if "constituency_in_english" in df_map.columns else ("loksabha_in_english" if "loksabha_in_english" in df_map.columns else None)
-    mand_col = "name_in_english" if "name_in_english" in df_map.columns else None
-
-    # 1. District Filter
-    all_dists = sorted(df_map[dist_col].dropna().unique().tolist()) if dist_col else sorted(list(set(d.get("name_in_english") for d in district_list_mp if d.get("name_in_english"))))
-    selected_district = st.sidebar.selectbox("Select District", ["All Districts"] + all_dists)
-    
-    # 2. Constituency Filter (Automatically updates based on District)
-    df_filtered = df_map.copy()
-    if selected_district != "All Districts" and dist_col:
-        df_filtered = df_filtered[df_filtered[dist_col] == selected_district]
         
-    all_consts = sorted(df_filtered[const_col].dropna().unique().tolist()) if const_col else []
-    selected_constituency = st.sidebar.selectbox("Select Constituency", ["All Constituencies"] + all_consts)
-    
-    # 3. Mandal Filter (Automatically updates based on Constituency)
-    if selected_constituency != "All Constituencies" and const_col:
-        df_filtered = df_filtered[df_filtered[const_col] == selected_constituency]
-        
-    all_mandals = sorted(df_filtered[mand_col].dropna().unique().tolist()) if mand_col else []
-    selected_mandal = st.sidebar.selectbox("Select Mandal", ["All Mandals"] + all_mandals)
-
-    # --- FILTERING SUMMARY NUMBERS ---
-    display_data_mp = {}
-    display_data_zp = {}
-    display_title = "Statewide Standings"
-    
-    # Helper to fix capitalization issues (e.g. "ADDANKI" vs "Addanki")
-    def find_match(dataset_list, target_name):
-        if not target_name: return {}
-        target = str(target_name).strip().lower()
-        return next((item for item in dataset_list if str(item.get("name_in_english", "")).strip().lower() == target), {})
-
-    if selected_mandal != "All Mandals":
-        display_data_mp = find_match(mandal_list_mp, selected_mandal)
-        display_data_zp = find_match(mandal_list_zp, selected_mandal)
-        display_title = f"{selected_mandal} Mandal Standings"
-        
-    elif selected_constituency != "All Constituencies":
-        display_data_mp = find_match(constituency_list_mp, selected_constituency)
-        display_data_zp = find_match(constituency_list_zp, selected_constituency)
-        display_title = f"{selected_constituency} Constituency Standings"
-        
-    elif selected_district != "All Districts":
-        display_data_mp = find_match(district_list_mp, selected_district)
-        display_data_zp = find_match(district_list_zp, selected_district)
-        display_title = f"{selected_district} District Standings"
-        
-    else:
-        display_data_mp = data.get("lead", {}).get("Mandal Parishad", {})
-        display_data_zp = data.get("lead", {}).get("Zilla Parishad", {})
-
     # --- DASHBOARD UI ---
     tab1, tab2 = st.tabs(["🏛️ Zilla Parishad (ZPTC)", "🌿 Mandal Parishad (MPTC)"])
     
-    def render_results(dataset, list_data_source, title, level_key):
-        if not dataset:
-            # Displays a soft warning instead of completely failing if ETV hasn't published the top-level numbers for this exact region yet
-            st.warning(f"Aggregate number data unavailable for '{title}'. (The detailed candidate list below may still have records).")
+    # Reusable function to render filters, numbers, and tables for a specific tab
+    def render_tab_content(level_name):
+        # 1. Base data extraction for this specific level
+        raw_cands = data.get("candidates", {}).get(level_name, {})
+        cand_array = raw_cands.get("Results", []) if isinstance(raw_cands, dict) else raw_cands
+        df_map = pd.DataFrame(cand_array)
+        
+        # Identify ETV's dynamic column names
+        dist_col = "district_in_english" if "district_in_english" in df_map.columns else None
+        const_col = "constituency_in_english" if "constituency_in_english" in df_map.columns else ("loksabha_in_english" if "loksabha_in_english" in df_map.columns else None)
+        mand_col = "name_in_english" if "name_in_english" in df_map.columns else None
+
+        # 2. Render Inline Filters (Cascading)
+        st.markdown(f"#### Filter {level_name} Results")
+        f_col1, f_col2, f_col3 = st.columns(3)
+        
+        all_dists = sorted(df_map[dist_col].dropna().unique().tolist()) if dist_col else []
+        with f_col1:
+            # Using key= allows us to use identical dropdown names in both tabs without Streamlit throwing an error
+            selected_dist = st.selectbox("Select District", ["All Districts"] + all_dists, key=f"dist_{level_name}")
+            
+        df_filtered = df_map.copy()
+        if selected_dist != "All Districts" and dist_col:
+            df_filtered = df_filtered[df_filtered[dist_col] == selected_dist]
+            
+        all_consts = sorted(df_filtered[const_col].dropna().unique().tolist()) if const_col else []
+        with f_col2:
+            selected_const = st.selectbox("Select Constituency", ["All Constituencies"] + all_consts, key=f"const_{level_name}")
+            
+        if selected_const != "All Constituencies" and const_col:
+            df_filtered = df_filtered[df_filtered[const_col] == selected_const]
+            
+        all_mandals = sorted(df_filtered[mand_col].dropna().unique().tolist()) if mand_col else []
+        with f_col3:
+            selected_mand = st.selectbox("Select Mandal", ["All Mandals"] + all_mandals, key=f"mand_{level_name}")
+
+        st.markdown("---")
+
+        # 3. Determine Summary Numbers to Display
+        def find_match(dataset_list, target_name):
+            if not target_name: return {}
+            target = str(target_name).strip().lower()
+            return next((item for item in dataset_list if str(item.get("name_in_english", "")).strip().lower() == target), {})
+
+        display_data = {}
+        display_title = f"Statewide Standings"
+        
+        if selected_mand != "All Mandals":
+            display_data = find_match(data.get("mandals", {}).get(level_name, []), selected_mand)
+            display_title = f"{selected_mand} Mandal Standings"
+        elif selected_const != "All Constituencies":
+            display_data = find_match(data.get("constituencies", {}).get(level_name, []), selected_const)
+            display_title = f"{selected_const} Constituency Standings"
+        elif selected_dist != "All Districts":
+            display_data = find_match(data.get("districts", {}).get(level_name, []), selected_dist)
+            display_title = f"{selected_dist} District Standings"
         else:
-            st.subheader(title)
-            col1, col2 = st.columns(2)
-            col1.metric("Total Seats", dataset.get("total_seats", "N/A"))
-            total_won = dataset.get("total_won") or sum([p.get("win", 0) for p in dataset.get("parties", [])])
-            col2.metric("Total Won", total_won)
+            display_data = data.get("lead", {}).get(level_name, {})
+
+        # 4. Render Summary Numbers
+        if not display_data:
+            st.warning(f"Aggregate number data unavailable for '{display_title}'. (The detailed candidate list below may still have records).")
+        else:
+            st.subheader(display_title)
+            m_col1, m_col2 = st.columns(2)
+            m_col1.metric("Total Seats", display_data.get("total_seats", "N/A"))
+            total_won = display_data.get("total_won") or sum([p.get("win", 0) for p in display_data.get("parties", [])])
+            m_col2.metric("Total Won", total_won)
             
             st.markdown("---")
-            parties = dataset.get("parties", [])
+            parties = display_data.get("parties", [])
             if parties:
-                cols = st.columns(max(len(parties), 1))
+                p_cols = st.columns(max(len(parties), 1))
                 for i, party in enumerate(parties):
-                    with cols[i]:
+                    with p_cols[i]:
                         st.markdown(f"### {party.get('party_name_in_english', 'Unknown')}")
                         st.metric("Won", party.get("win", 0))
                         st.metric("Leading", party.get("lead", 0))
                     
+        # 5. Render Detailed Candidate Table
         st.markdown("---")
-        st.subheader("Detailed Candidate List")
+        st.subheader(f"Detailed Candidate List: {level_name}")
         
-        raw_results = data.get("candidates", {}).get(level_key, {})
-        candidate_list = raw_results.get("Results", []) if isinstance(raw_results, dict) else raw_results
-        
-        if candidate_list:
-            df = pd.DataFrame(candidate_list)
-            
-            # Case-insensitive table filtering
-            if selected_mandal != "All Mandals":
-                if "name_in_english" in df.columns:
-                    df = df[df["name_in_english"].str.lower() == selected_mandal.lower()]
-            elif selected_constituency != "All Constituencies":
-                if "constituency_in_english" in df.columns:
-                    df = df[df["constituency_in_english"].str.lower() == selected_constituency.lower()]
-                elif "loksabha_in_english" in df.columns:
-                    df = df[df["loksabha_in_english"].str.lower() == selected_constituency.lower()]
-            elif selected_district != "All Districts":
-                if "district_in_english" in df.columns:
-                    df = df[df["district_in_english"].str.lower() == selected_district.lower()]
-            
+        if not df_map.empty:
+            # Filter the table based on the user's dropdown choices
+            if selected_mand != "All Mandals" and mand_col:
+                df_map = df_map[df_map[mand_col].str.lower() == selected_mand.lower()]
+            elif selected_const != "All Constituencies" and const_col:
+                df_map = df_map[df_map[const_col].str.lower() == selected_const.lower()]
+            elif selected_dist != "All Districts" and dist_col:
+                df_map = df_map[df_map[dist_col].str.lower() == selected_dist.lower()]
+                
+            # Clean up the column names for presentation
             cols_to_keep = {}
-            if "district_in_english" in df.columns: cols_to_keep["district_in_english"] = "District"
-            if "constituency_in_english" in df.columns: cols_to_keep["constituency_in_english"] = "Constituency"
-            if "loksabha_in_english" in df.columns: cols_to_keep["loksabha_in_english"] = "Constituency"
-            if "name_in_english" in df.columns: cols_to_keep["name_in_english"] = "Region/Mandal"
-            if "candidate_in_english" in df.columns: cols_to_keep["candidate_in_english"] = "Candidate Name"
-            if "party_in_english" in df.columns: cols_to_keep["party_in_english"] = "Party"
-            if "status" in df.columns: cols_to_keep["status"] = "Status"
+            if dist_col: cols_to_keep[dist_col] = "District"
+            if const_col: cols_to_keep[const_col] = "Constituency"
+            if mand_col: cols_to_keep[mand_col] = "Mandal"
+            if "candidate_in_english" in df_map.columns: cols_to_keep["candidate_in_english"] = "Candidate Name"
+            if "party_in_english" in df_map.columns: cols_to_keep["party_in_english"] = "Party"
+            if "status" in df_map.columns: cols_to_keep["status"] = "Status"
             
-            if not df.empty:
-                st.dataframe(df.rename(columns=cols_to_keep)[list(cols_to_keep.values())], use_container_width=True, hide_index=True)
+            if not df_map.empty:
+                st.dataframe(df_map.rename(columns=cols_to_keep)[list(cols_to_keep.values())], use_container_width=True, hide_index=True)
             else:
-                st.info("No candidates found for this specific filter.")
+                st.info("No candidates found matching this selection.")
         else:
             st.info("Detailed candidate list is currently loading or unavailable.")
 
+    # Generate the content for both tabs independently
     with tab1:
-        render_results(display_data_zp, data.get("candidates", {}), f"Zilla Parishad: {display_title}", "Zilla Parishad")
+        render_tab_content("Zilla Parishad")
 
     with tab2:
-        render_results(display_data_mp, data.get("candidates", {}), f"Mandal Parishad: {display_title}", "Mandal Parishad")
+        render_tab_content("Mandal Parishad")
 
 else:
     st.info("Loading data from ETV servers...")
