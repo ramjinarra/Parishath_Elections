@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import pandas as pd
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="AP Election Dashboard", layout="wide")
@@ -12,31 +13,31 @@ col_title, col_btn = st.columns([4, 1])
 with col_btn:
     st.write("") 
     if st.button("🔄 Fetch Latest Data"):
-        st.cache_data.clear() # Clears the cache to force a fresh pull
+        st.cache_data.clear()
 
 @st.cache_data(ttl=300)
 def fetch_all_data():
     try:
-        # 1. Ask the server for the newest file paths
         latest_resp = requests.get(LATEST_URL)
         latest_resp.raise_for_status()
         latest_data = latest_resp.json()
         
-        # 2. Smart URL extractor: searches for keywords in the keys
+        # Aggressive URL matcher
         def get_url(keyword):
             for key, value in latest_data.items():
-                if keyword.lower() in key.lower() and isinstance(value, list) and len(value) > 0:
+                # ETV sometimes uses hyphens, camelCase, or completely lowercase
+                if keyword.lower() in key.lower().replace("-", "") and isinstance(value, list) and len(value) > 0:
                     return value[0].get("directory")
             return None
 
-        # Dynamically find the paths by keyword rather than hardcoded keys
+        # Grab all the different layers of data
         urls = {
             "lead": get_url("lead"),
-            "districts": get_url("regionwise"), # ETV stores District data here
-            "mandals": get_url("districtwise")  # ETV stores Mandal data here
+            "districts": get_url("regionwise"), 
+            "mandals": get_url("districtwise"), 
+            "candidates": get_url("constituency") # <-- New: Grabs the actual list of winners/leads
         }
         
-        # 3. Fetch the actual JSONs
         datasets = {"latest_keys": list(latest_data.keys()), "urls_found": urls}
         for key, url in urls.items():
             if url:
@@ -58,42 +59,33 @@ data = fetch_all_data()
 st.sidebar.header("Filter Results")
 
 if data:
-    # --- DEBUG HELPER (You can delete this block later once it's working) ---
-    with st.expander("🛠️ API Debug Info (Click to expand)"):
+    with st.expander("🛠️ API Debug Info (Check this if filters are empty)"):
         st.write("Keys found in latest.json:", data.get("latest_keys"))
-        st.write("Target URLs matched:", data.get("urls_found"))
+        st.write("URLs matched:", data.get("urls_found"))
     
-    # Safely extract the lists of districts and mandals for both ZP and MP
+    # Extract dropdown lists safely
     district_list_mp = data.get("districts", {}).get("Mandal Parishad", [])
     mandal_list_mp = data.get("mandals", {}).get("Mandal Parishad", [])
     
-    district_list_zp = data.get("districts", {}).get("Zilla Parishad", [])
-    mandal_list_zp = data.get("mandals", {}).get("Zilla Parishad", [])
-    
-    # Create lists of names for the dropdowns
-    district_names = ["All Districts"] + [d.get("name_in_english") for d in district_list_mp if d.get("name_in_english")]
-    mandal_names = ["All Mandals"] + [m.get("name_in_english") for m in mandal_list_mp if m.get("name_in_english")]
+    district_names = ["All Districts"] + sorted(list(set(d.get("name_in_english") for d in district_list_mp if d.get("name_in_english"))))
+    mandal_names = ["All Mandals"] + sorted(list(set(m.get("name_in_english") for m in mandal_list_mp if m.get("name_in_english"))))
 
-    # Render the selectboxes
     selected_district = st.sidebar.selectbox("Select District", district_names)
     selected_mandal = st.sidebar.selectbox("Select Mandal", mandal_names)
 
-    # --- FILTERING LOGIC ---
+    # --- FILTERING SUMMARY NUMBERS ---
     display_data_mp = {}
     display_data_zp = {}
     display_title = "Statewide Standings"
 
-    # Waterfall logic: Check Mandal first, then District, then default to Statewide
     if selected_mandal != "All Mandals":
         display_data_mp = next((m for m in mandal_list_mp if m.get("name_in_english") == selected_mandal), {})
-        display_data_zp = next((z for z in mandal_list_zp if z.get("name_in_english") == selected_mandal), {})
+        display_data_zp = next((z for z in data.get("mandals", {}).get("Zilla Parishad", []) if z.get("name_in_english") == selected_mandal), {})
         display_title = f"{selected_mandal} Standings"
-        
     elif selected_district != "All Districts":
         display_data_mp = next((d for d in district_list_mp if d.get("name_in_english") == selected_district), {})
-        display_data_zp = next((z for z in district_list_zp if z.get("name_in_english") == selected_district), {})
+        display_data_zp = next((z for z in data.get("districts", {}).get("Zilla Parishad", []) if z.get("name_in_english") == selected_district), {})
         display_title = f"{selected_district} District Standings"
-        
     else:
         display_data_mp = data.get("lead", {}).get("Mandal Parishad", {})
         display_data_zp = data.get("lead", {}).get("Zilla Parishad", {})
@@ -101,42 +93,66 @@ if data:
     # --- DASHBOARD UI ---
     tab1, tab2 = st.tabs(["🏛️ Zilla Parishad (ZPTC)", "🌿 Mandal Parishad (MPTC)"])
     
-    # Helper function to render a results grid so we don't repeat code
-    def render_results(dataset, title):
+    # Helper to render the numbers AND the table
+    def render_results(dataset, list_data_source, title, level_key):
         if not dataset:
-            st.info("Data unavailable for this specific selection.")
+            st.info("Aggregate data unavailable for this selection.")
             return
             
+        # 1. Show the numbers
         st.subheader(title)
         col1, col2 = st.columns(2)
         col1.metric("Total Seats", dataset.get("total_seats", "N/A"))
-        
-        # Depending on the level (state vs local), the 'won' key might vary slightly
         total_won = dataset.get("total_won") or sum([p.get("win", 0) for p in dataset.get("parties", [])])
         col2.metric("Total Won", total_won)
         
         st.markdown("---")
         parties = dataset.get("parties", [])
         if parties:
-            cols = st.columns(len(parties))
+            cols = st.columns(max(len(parties), 1))
             for i, party in enumerate(parties):
                 with cols[i]:
-                    name = party.get("party_name_in_english", "Unknown")
-                    won = party.get("win", 0)
-                    lead = party.get("lead", 0)
+                    st.markdown(f"### {party.get('party_name_in_english', 'Unknown')}")
+                    st.metric("Won", party.get("win", 0))
+                    st.metric("Leading", party.get("lead", 0))
                     
-                    st.markdown(f"### {name}")
-                    st.metric("Won", won)
-                    st.metric("Leading", lead)
+        # 2. Show the detailed list (Candidates)
+        st.markdown("---")
+        st.subheader("Detailed Candidate List")
+        
+        # Safely extract the Results array for this specific tier (ZPTC or MPTC)
+        raw_results = data.get("candidates", {}).get(level_key, {})
+        candidate_list = raw_results.get("Results", []) if isinstance(raw_results, dict) else raw_results
+        
+        if candidate_list:
+            # Convert JSON to a Pandas DataFrame for a nice, sortable table
+            df = pd.DataFrame(candidate_list)
+            
+            # Filter the table based on sidebar selections
+            if selected_district != "All Districts" and "district_in_english" in df.columns:
+                df = df[df["district_in_english"].str.contains(selected_district, case=False, na=False)]
+            
+            # Only keep the columns we care about, rename them to look nice
+            cols_to_keep = {}
+            if "name_in_english" in df.columns: cols_to_keep["name_in_english"] = "Constituency/Region"
+            if "candidate_in_english" in df.columns: cols_to_keep["candidate_in_english"] = "Candidate Name"
+            if "party_in_english" in df.columns: cols_to_keep["party_in_english"] = "Party"
+            if "status" in df.columns: cols_to_keep["status"] = "Status"
+            
+            # Display the interactive table
+            if not df.empty:
+                st.dataframe(df.rename(columns=cols_to_keep)[list(cols_to_keep.values())], use_container_width=True)
+            else:
+                st.info("No candidates found for this specific filter.")
         else:
-            st.info("No party data available at this level.")
+            st.info("Detailed candidate list is currently loading or unavailable.")
 
     # Render the tabs
     with tab1:
-        render_results(display_data_zp, f"Zilla Parishad: {display_title}")
+        render_results(display_data_zp, data.get("candidates", {}), f"Zilla Parishad: {display_title}", "Zilla Parishad")
 
     with tab2:
-        render_results(display_data_mp, f"Mandal Parishad: {display_title}")
+        render_results(display_data_mp, data.get("candidates", {}), f"Mandal Parishad: {display_title}", "Mandal Parishad")
 
 else:
     st.info("Loading data from ETV servers...")
