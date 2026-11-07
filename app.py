@@ -22,20 +22,19 @@ def fetch_all_data():
         latest_resp.raise_for_status()
         latest_data = latest_resp.json()
         
-        # Aggressive URL matcher
-        def get_url(keyword):
-            for key, value in latest_data.items():
-                # ETV sometimes uses hyphens, camelCase, or completely lowercase
-                if keyword.lower() in key.lower().replace("-", "") and isinstance(value, list) and len(value) > 0:
-                    return value[0].get("directory")
+        # Safely extract the exact URL paths using the keys we found in the debug info
+        def get_exact_url(key_name):
+            pointers = latest_data.get(key_name, [])
+            if pointers and isinstance(pointers, list) and len(pointers) > 0:
+                return pointers[0].get("directory")
             return None
 
-        # Grab all the different layers of data
+        # Grab all the different layers of data using ETV's current naming convention
         urls = {
-            "lead": get_url("lead"),
-            "districts": get_url("regionwise"), 
-            "mandals": get_url("districtwise"), 
-            "candidates": get_url("constituency") # <-- New: Grabs the actual list of winners/leads
+            "lead": get_exact_url("pointers-by-lead"),
+            "districts": get_exact_url("pointers-by-district"), 
+            "mandals": get_exact_url("pointers-by-mandal"), 
+            "candidates": get_exact_url("pointers-by-mptc_zptc") 
         }
         
         datasets = {"latest_keys": list(latest_data.keys()), "urls_found": urls}
@@ -59,10 +58,6 @@ data = fetch_all_data()
 st.sidebar.header("Filter Results")
 
 if data:
-    with st.expander("🛠️ API Debug Info (Check this if filters are empty)"):
-        st.write("Keys found in latest.json:", data.get("latest_keys"))
-        st.write("URLs matched:", data.get("urls_found"))
-    
     # Extract dropdown lists safely
     district_list_mp = data.get("districts", {}).get("Mandal Parishad", [])
     mandal_list_mp = data.get("mandals", {}).get("Mandal Parishad", [])
@@ -120,12 +115,13 @@ if data:
         st.markdown("---")
         st.subheader("Detailed Candidate List")
         
-        # Safely extract the Results array for this specific tier (ZPTC or MPTC)
+        # Safely extract the array for this specific tier
         raw_results = data.get("candidates", {}).get(level_key, {})
+        # Depending on ETV's format, the array might be nested under "Results" or directly under the level key
         candidate_list = raw_results.get("Results", []) if isinstance(raw_results, dict) else raw_results
         
         if candidate_list:
-            # Convert JSON to a Pandas DataFrame for a nice, sortable table
+            # Convert JSON to a Pandas DataFrame
             df = pd.DataFrame(candidate_list)
             
             # Filter the table based on sidebar selections
@@ -134,6 +130,7 @@ if data:
             
             # Only keep the columns we care about, rename them to look nice
             cols_to_keep = {}
+            if "district_in_english" in df.columns: cols_to_keep["district_in_english"] = "District"
             if "name_in_english" in df.columns: cols_to_keep["name_in_english"] = "Constituency/Region"
             if "candidate_in_english" in df.columns: cols_to_keep["candidate_in_english"] = "Candidate Name"
             if "party_in_english" in df.columns: cols_to_keep["party_in_english"] = "Party"
@@ -141,7 +138,7 @@ if data:
             
             # Display the interactive table
             if not df.empty:
-                st.dataframe(df.rename(columns=cols_to_keep)[list(cols_to_keep.values())], use_container_width=True)
+                st.dataframe(df.rename(columns=cols_to_keep)[list(cols_to_keep.values())], use_container_width=True, hide_index=True)
             else:
                 st.info("No candidates found for this specific filter.")
         else:
