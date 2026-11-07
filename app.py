@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 
+# --- PAGE CONFIG ---
 st.set_page_config(page_title="AP Election Dashboard", layout="wide")
 st.title("Andhra Pradesh Parishad Elections 2026")
 
@@ -11,7 +12,7 @@ col_title, col_btn = st.columns([4, 1])
 with col_btn:
     st.write("") 
     if st.button("🔄 Fetch Latest Data"):
-        st.cache_data.clear()
+        st.cache_data.clear() # Clears the cache to force a fresh pull
 
 @st.cache_data(ttl=300)
 def fetch_all_data():
@@ -21,20 +22,22 @@ def fetch_all_data():
         latest_resp.raise_for_status()
         latest_data = latest_resp.json()
         
-        # Helper to safely extract URLs from the latest.json dictionary
-        def get_url(key):
-            pointers = latest_data.get(key, [])
-            return pointers[0].get("directory") if pointers else None
+        # 2. Smart URL extractor: searches for keywords in the keys
+        def get_url(keyword):
+            for key, value in latest_data.items():
+                if keyword.lower() in key.lower() and isinstance(value, list) and len(value) > 0:
+                    return value[0].get("directory")
+            return None
 
-        # 2. Extract the dynamic URLs for leads, districts, and mandals
+        # Dynamically find the paths by keyword rather than hardcoded keys
         urls = {
-            "lead": get_url("pointers-by-lead"),
-            "districts": get_url("pointers-by-regionWise"), # ETV stores Districts here
-            "mandals": get_url("pointers-by-districtWise")  # ETV stores Mandals here
+            "lead": get_url("lead"),
+            "districts": get_url("regionwise"), # ETV stores District data here
+            "mandals": get_url("districtwise")  # ETV stores Mandal data here
         }
         
         # 3. Fetch the actual JSONs
-        datasets = {}
+        datasets = {"latest_keys": list(latest_data.keys()), "urls_found": urls}
         for key, url in urls.items():
             if url:
                 resp = requests.get(url)
@@ -55,43 +58,45 @@ data = fetch_all_data()
 st.sidebar.header("Filter Results")
 
 if data:
-    # Safely extract the lists of districts and mandals from the fetched JSON
-    # We default to empty lists if the keys aren't found
-    district_list = data["districts"].get("Mandal Parishad", [])
-    mandal_list = data["mandals"].get("Mandal Parishad", [])
+    # --- DEBUG HELPER (You can delete this block later once it's working) ---
+    with st.expander("🛠️ API Debug Info (Click to expand)"):
+        st.write("Keys found in latest.json:", data.get("latest_keys"))
+        st.write("Target URLs matched:", data.get("urls_found"))
+    
+    # Safely extract the lists of districts and mandals for both ZP and MP
+    district_list_mp = data.get("districts", {}).get("Mandal Parishad", [])
+    mandal_list_mp = data.get("mandals", {}).get("Mandal Parishad", [])
+    
+    district_list_zp = data.get("districts", {}).get("Zilla Parishad", [])
+    mandal_list_zp = data.get("mandals", {}).get("Zilla Parishad", [])
     
     # Create lists of names for the dropdowns
-    district_names = ["All Districts"] + [d.get("name_in_english") for d in district_list if d.get("name_in_english")]
-    mandal_names = ["All Mandals"] + [m.get("name_in_english") for m in mandal_list if m.get("name_in_english")]
+    district_names = ["All Districts"] + [d.get("name_in_english") for d in district_list_mp if d.get("name_in_english")]
+    mandal_names = ["All Mandals"] + [m.get("name_in_english") for m in mandal_list_mp if m.get("name_in_english")]
 
     # Render the selectboxes
     selected_district = st.sidebar.selectbox("Select District", district_names)
     selected_mandal = st.sidebar.selectbox("Select Mandal", mandal_names)
 
     # --- FILTERING LOGIC ---
-    # Determine which dataset to show based on the user's selection
     display_data_mp = {}
     display_data_zp = {}
     display_title = "Statewide Standings"
 
+    # Waterfall logic: Check Mandal first, then District, then default to Statewide
     if selected_mandal != "All Mandals":
-        # Find the specific mandal in the list
-        mandal_record = next((m for m in mandal_list if m.get("name_in_english") == selected_mandal), {})
-        display_data_mp = mandal_record
-        display_data_zp = next((z for z in data["mandals"].get("Zilla Parishad", []) if z.get("name_in_english") == selected_mandal), {})
+        display_data_mp = next((m for m in mandal_list_mp if m.get("name_in_english") == selected_mandal), {})
+        display_data_zp = next((z for z in mandal_list_zp if z.get("name_in_english") == selected_mandal), {})
         display_title = f"{selected_mandal} Standings"
         
     elif selected_district != "All Districts":
-        # Find the specific district in the list
-        district_record = next((d for d in district_list if d.get("name_in_english") == selected_district), {})
-        display_data_mp = district_record
-        display_data_zp = next((z for z in data["districts"].get("Zilla Parishad", []) if z.get("name_in_english") == selected_district), {})
+        display_data_mp = next((d for d in district_list_mp if d.get("name_in_english") == selected_district), {})
+        display_data_zp = next((z for z in district_list_zp if z.get("name_in_english") == selected_district), {})
         display_title = f"{selected_district} District Standings"
         
     else:
-        # Default to top-level leads
-        display_data_mp = data["lead"].get("Mandal Parishad", {})
-        display_data_zp = data["lead"].get("Zilla Parishad", {})
+        display_data_mp = data.get("lead", {}).get("Mandal Parishad", {})
+        display_data_zp = data.get("lead", {}).get("Zilla Parishad", {})
 
     # --- DASHBOARD UI ---
     tab1, tab2 = st.tabs(["🏛️ Zilla Parishad (ZPTC)", "🌿 Mandal Parishad (MPTC)"])
@@ -99,7 +104,7 @@ if data:
     # Helper function to render a results grid so we don't repeat code
     def render_results(dataset, title):
         if not dataset:
-            st.info("Data unavailable for this selection.")
+            st.info("Data unavailable for this specific selection.")
             return
             
         st.subheader(title)
@@ -126,6 +131,7 @@ if data:
         else:
             st.info("No party data available at this level.")
 
+    # Render the tabs
     with tab1:
         render_results(display_data_zp, f"Zilla Parishad: {display_title}")
 
@@ -133,4 +139,4 @@ if data:
         render_results(display_data_mp, f"Mandal Parishad: {display_title}")
 
 else:
-    st.info("Loading data...")
+    st.info("Loading data from ETV servers...")
